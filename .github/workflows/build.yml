@@ -25,6 +25,87 @@ jobs:
           GRADLE
           sed -i 's/compileSdk = 34/compileSdk = 36/; s/targetSdk = 34/targetSdk = 36/' app/build.gradle.kts
 
+      - name: Упростить парсер конфигов
+        run: |
+          cat > app/src/main/java/com/olxi/route/WgConfig.kt <<'KOTLIN'
+          package com.olxi.route
+
+          data class WgConfig(
+              val name: String,
+              val privateKey: String,
+              val addresses: List<String>,
+              val dns: List<String>,
+              val mtu: Int?,
+              val i1: String?,
+              val peerPublicKey: String,
+              val allowedIps: List<String>,
+              val endpointHost: String,
+              val endpointPort: Int,
+              val keepalive: Int?,
+              val raw: String
+          )
+
+          object ConfigParser {
+              fun parse(name: String, text: String): WgConfig {
+                  val iface = HashMap<String, String>()
+                  val peer = HashMap<String, String>()
+                  var inInterface = false
+                  var inPeer = false
+
+                  for (rawLine in text.split("\n")) {
+                      val line = rawLine.trim()
+                      if (line.isEmpty() || line.startsWith("#")) continue
+                      if (line.equals("[Interface]", ignoreCase = true)) {
+                          inInterface = true
+                          inPeer = false
+                          continue
+                      }
+                      if (line.equals("[Peer]", ignoreCase = true)) {
+                          inInterface = false
+                          inPeer = true
+                          continue
+                      }
+                      val eq = line.indexOf('=')
+                      if (eq <= 0) continue
+                      val key = line.substring(0, eq).trim()
+                      val value = line.substring(eq + 1).trim()
+                      if (inInterface) {
+                          iface[key] = value
+                      } else if (inPeer) {
+                          peer[key] = value
+                      }
+                  }
+
+                  val privateKey = iface["PrivateKey"] ?: throw IllegalArgumentException("нет PrivateKey")
+                  val peerKey = peer["PublicKey"] ?: throw IllegalArgumentException("нет PublicKey в [Peer]")
+                  val endpoint = peer["Endpoint"] ?: throw IllegalArgumentException("нет Endpoint")
+                  val host = endpoint.substringBeforeLast(':').removePrefix("[").removeSuffix("]")
+                  val port = endpoint.substringAfterLast(':').toIntOrNull()
+                      ?: throw IllegalArgumentException("неверный порт в Endpoint")
+
+                  return WgConfig(
+                      name = name,
+                      privateKey = privateKey,
+                      addresses = splitList(iface["Address"]),
+                      dns = splitList(iface["DNS"]),
+                      mtu = iface["MTU"]?.toIntOrNull(),
+                      i1 = iface["I1"],
+                      peerPublicKey = peerKey,
+                      allowedIps = splitList(peer["AllowedIPs"]),
+                      endpointHost = host,
+                      endpointPort = port,
+                      keepalive = peer["PersistentKeepalive"]?.toIntOrNull(),
+                      raw = text
+                  )
+              }
+
+              private fun splitList(v: String?): List<String> {
+                  if (v == null) return emptyList()
+                  return v.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+              }
+          }
+          KOTLIN
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
